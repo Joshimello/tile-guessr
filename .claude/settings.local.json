@@ -17,7 +17,8 @@
       "mcp__playwright__browser_click",
       "mcp__playwright__browser_tabs",
       "Bash(grep:*)",
-      "WebFetch(domain:www.maya-ndljk.com)"
+      "WebFetch(domain:www.maya-ndljk.com)",
+      "Bash(bun remove:*)"
     ]
   }
 }
