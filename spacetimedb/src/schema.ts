@@ -20,8 +20,9 @@ export const lobby = table(
   {
     id: t.u64().primaryKey().autoInc(),
     maxPlayers: t.u32(),
-    status: t.string(), // "waiting" | "in_game"
+    status: t.string(), // "waiting" | "starting" | "in_game"
     createdAt: t.timestamp(),
+    gameStartsAt: t.u64().optional(), // micros since epoch; set when status = "starting"
   }
 );
 
@@ -39,6 +40,7 @@ export const lobby_member = table(
     lobbyId: t.u64(),
     playerIdentity: t.identity(),
     joinedAt: t.timestamp(),
+    colorPreference: t.string(), // "4b"|"3b1w"|"2b2w"|"1b3w"|"4w" (4-tile) or "3b"|"2b1w"|"1b2w"|"3w" (3-tile)
   }
 );
 
@@ -108,6 +110,7 @@ export const game_state = table(
     inHandTileId: t.u64().optional(),
     winner: t.identity().optional(),
     lastAction: t.string().optional(),
+    targetedTileId: t.u64().optional(), // Set when active player selects opponent tile before guessing
   }
 );
 

@@ -15,4 +15,5 @@ export default __t.row({
   maxPlayers: __t.u32().name("max_players"),
   status: __t.string(),
   createdAt: __t.timestamp().name("created_at"),
+  gameStartsAt: __t.option(__t.u64()).name("game_starts_at"),
 });

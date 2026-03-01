@@ -5,6 +5,10 @@ import { fly } from 'svelte/transition';
 import { flip } from 'svelte/animate';
 import { cubicOut } from 'svelte/easing';
 import type { GameState, TilePublic, TileSecret, Player, Lobby, LobbyMember } from '../module_bindings/types';
+import { Button } from '$lib/components/ui/button';
+import { Separator } from '$lib/components/ui/separator';
+import * as Popover from '$lib/components/ui/popover';
+import * as Dialog from '$lib/components/ui/dialog';
 
 interface Props {
   gameState: GameState;
@@ -13,15 +17,17 @@ interface Props {
   players: Player[];
   myLobby: Lobby;
   members: LobbyMember[];
+  onLeave: () => void;
+  onQueueAgain: (maxPlayers: number) => void;
 }
 
-const { gameState, tilePub, mySecrets, players, myLobby, members }: Props = $props();
+const { gameState, tilePub, mySecrets, players, myLobby, members, onLeave, onQueueAgain }: Props = $props();
 
 const conn = useSpacetimeDB();
 const drawTileReducer = useReducer(reducers.drawTile);
 const attackReducer = useReducer(reducers.attack);
 const endTurnReducer = useReducer(reducers.endTurn);
-const leaveLobbyReducer = useReducer(reducers.leaveLobby);
+const selectTargetReducer = useReducer(reducers.selectTarget);
 
 // ── Derived state ───────────────────────────────────────────────────────────
 
@@ -35,9 +41,11 @@ const lobbyTiles = $derived(
   tilePub.filter(t => t.lobbyId === myLobby.id)
 );
 
-const poolLeft = $derived(
-  26 - lobbyTiles.length
-);
+// Pool counts by color
+const blackDrawn = $derived(lobbyTiles.filter(t => t.color === 'black').length);
+const whiteDrawn = $derived(lobbyTiles.filter(t => t.color === 'white').length);
+const blackLeft = $derived(13 - blackDrawn);
+const whiteLeft = $derived(13 - whiteDrawn);
 
 const myTiles = $derived(
   lobbyTiles
@@ -60,6 +68,9 @@ const opponents = $derived(
       tiles: lobbyTiles
         .filter(t => t.ownerId.toHexString() === m.playerIdentity.toHexString() && !t.isInHand)
         .sort((a, b) => a.position - b.position),
+      handTile: lobbyTiles.find(
+        t => t.ownerId.toHexString() === m.playerIdentity.toHexString() && t.isInHand
+      ),
     }))
 );
 
@@ -73,10 +84,16 @@ const winnerName = $derived(
     : null
 );
 
+const myPlayerName = $derived(
+  players.find(p => p.identity.toHexString() === myId)?.name ?? ''
+);
+
+const didIWin = $derived(winnerName != null && winnerName === myPlayerName);
+
 // Get value for a tile: own placed tiles use secret, drawn tile stays hidden, others use revealedValue
 function tileValue(tile: TilePublic): number | null {
   if (tile.isRevealed) return tile.revealedValue ?? null;
-  if (tile.isInHand) return null; // drawn tile is always hidden
+  if (tile.isInHand) return null;
   if (tile.ownerId.toHexString() === myId) {
     return mySecrets.find(s => s.tilePublicId === tile.id)?.value ?? null;
   }
@@ -95,21 +112,33 @@ const selectedTile = $derived(
 function selectTile(tile: TilePublic) {
   if (tile.isRevealed || tile.isInHand) return;
   if (tile.ownerId.toHexString() === myId) return;
-  selectedTileId = tile.id;
+  if (selectedTileId === tile.id) {
+    selectedTileId = null;
+    selectTargetReducer({ lobbyId: myLobby.id, tileId: undefined });
+  } else {
+    selectedTileId = tile.id;
+    selectTargetReducer({ lobbyId: myLobby.id, tileId: tile.id });
+  }
+  guessedValue = null;
+}
+
+function clearSelection() {
+  if (selectedTileId != null) {
+    selectTargetReducer({ lobbyId: myLobby.id, tileId: undefined });
+  }
+  selectedTileId = null;
   guessedValue = null;
 }
 
 // ── Joker placement state ─────────────────────────────────────────────────────
 
-// Whether the in-hand tile is a Joker (value 0)
 const handTileIsJoker = $derived(
   myHandTile != null && mySecrets.find(s => s.tilePublicId === myHandTile!.id)?.value === 0
 );
 
 let showJokerPicker = $state(false);
-let selectedGap: number | null = $state(null); // index into myTiles gaps (0 = before first)
+let selectedGap: number | null = $state(null);
 
-// Convert visual gap index → jokerSlot (number of non-Joker tiles to the left)
 function gapToJokerSlot(gapIndex: number): number {
   let count = 0;
   for (let i = 0; i < gapIndex && i < myTiles.length; i++) {
@@ -121,7 +150,6 @@ function gapToJokerSlot(gapIndex: number): number {
   return count;
 }
 
-// Reset all selection state when phase resets
 $effect(() => {
   if (gameState.phase === 'draw') {
     selectedTileId = null;
@@ -149,8 +177,8 @@ $effect(() => {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-function drawTile() {
-  drawTileReducer({ lobbyId: myLobby.id });
+function drawTile(color: 'black' | 'white') {
+  drawTileReducer({ lobbyId: myLobby.id, color });
 }
 
 function guess() {
@@ -179,74 +207,181 @@ function confirmJokerPlacement() {
   selectedGap = null;
 }
 
-function leaveLobby() {
-  leaveLobbyReducer();
-}
+
 </script>
 
-<div class="min-h-screen bg-gray-900 text-white flex flex-col">
+<div class="flex min-h-screen flex-col bg-background text-foreground">
 
   <!-- Action toast -->
   {#if actionToast}
-    <div class="
-      fixed top-4 left-1/2 -translate-x-1/2 z-50
-      px-5 py-3 rounded-xl shadow-xl text-sm font-semibold
-      pointer-events-none select-none
-      {actionIsCorrect ? 'bg-green-600 text-white' : 'bg-red-700 text-white'}
-    ">
-      {actionToast}
+    <div
+      class="fixed top-4 left-1/2 z-50 -translate-x-1/2 pointer-events-none select-none
+        animate-in slide-in-from-top-2 fade-in duration-200"
+      in:fly={{ y: -12, duration: 200 }}
+    >
+      <div class="rounded-full px-5 py-2 text-sm font-semibold shadow-lg
+        {actionIsCorrect
+          ? 'bg-green-500 text-white'
+          : 'bg-destructive text-destructive-foreground'}">
+        {actionToast}
+      </div>
     </div>
   {/if}
 
   <!-- Header -->
-  <header class="flex items-center justify-between px-4 py-3 bg-gray-800 border-b border-gray-700">
+  <header class="flex items-center justify-between border-b bg-card px-4 py-3">
     <h1 class="text-lg font-bold tracking-wide">Tile Guessr</h1>
-    <div class="text-sm text-gray-300">
+    <div class="text-sm">
       {#if winnerName}
-        <span class="text-yellow-400 font-semibold">Game over</span>
+        <span class="rounded-full bg-secondary px-3 py-1 text-secondary-foreground">Game over</span>
       {:else if isMyTurn}
-        <span class="text-green-400 font-semibold">Your turn</span>
-        — {gameState.phase === 'draw' ? 'Draw a tile' : 'Attack!'}
+        <span class="rounded-full bg-green-500 px-3 py-1 text-white font-semibold">Your turn</span>
+        <span class="ml-2 text-muted-foreground">{gameState.phase === 'draw' ? 'Draw a tile' : 'Attack!'}</span>
       {:else}
-        <span class="text-gray-400">Waiting for {activePlayerName}…</span>
+        <span class="text-muted-foreground">Waiting for {activePlayerName}…</span>
       {/if}
     </div>
-    <div class="text-sm text-gray-400">Draw pile: <span class="font-mono text-white">{poolLeft}</span></div>
+    <!-- Pool counts by color -->
+    <div class="flex items-center gap-1.5 text-sm font-mono font-semibold">
+      <span class="flex items-center gap-1 rounded px-2 py-0.5 text-white" style="background-color: #5e81ac;">
+        ■ {blackLeft}
+      </span>
+      <span class="flex items-center gap-1 rounded px-2 py-0.5 text-white" style="background-color: #bf616a;">
+        ■ {whiteLeft}
+      </span>
+    </div>
   </header>
 
-  <main class="flex-1 flex flex-col gap-6 p-4 overflow-auto">
+  <main class="flex flex-1 flex-col gap-6 overflow-auto p-4 pb-24">
 
-    <!-- Winner banner -->
-    {#if winnerName}
-      <div class="bg-yellow-500 text-black rounded-xl p-6 text-center shadow-lg">
-        <div class="text-3xl font-bold mb-2">🏆 {winnerName} wins!</div>
-        <button
-          onclick={leaveLobby}
-          class="mt-3 px-6 py-2 bg-black text-yellow-400 rounded-lg font-semibold hover:bg-gray-900 transition-colors"
-        >
-          Leave
-        </button>
-      </div>
-    {/if}
+    <!-- Win / loss dialog -->
+    <Dialog.Root open={winnerName != null} onOpenChange={() => {}}>
+      <Dialog.Content class="max-w-xs text-center">
+        <Dialog.Header>
+          <Dialog.Title class="text-2xl">
+            {didIWin ? '🏆 You win!' : '💀 You lose'}
+          </Dialog.Title>
+          <Dialog.Description>
+            {winnerName} won the game.
+          </Dialog.Description>
+        </Dialog.Header>
+        <Dialog.Footer class="mt-4 flex flex-col gap-2 sm:flex-col">
+          <Button onclick={() => onQueueAgain(myLobby.maxPlayers)} class="w-full">
+            Queue Again ({myLobby.maxPlayers}p)
+          </Button>
+          <Button variant="outline" onclick={onLeave} class="w-full">
+            Return to Lobby
+          </Button>
+        </Dialog.Footer>
+      </Dialog.Content>
+    </Dialog.Root>
 
-    <!-- My lineup -->
+    <!-- Opponents (shown above my tiles) -->
+    {#each opponents as opp (opp.member.id)}
+      <section>
+        <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          {opp.player?.name ?? '?'}
+          {#if opp.member.playerIdentity.toHexString() === gameState.activePlayer.toHexString()}
+            <span class="ml-1 animate-pulse text-green-500">●</span>
+          {/if}
+        </h2>
+        <div class="flex flex-wrap justify-center gap-3">
+          {#each opp.tiles as tile, tileIdx (tile.id)}
+            {@const isTargetable = !tile.isRevealed && !tile.isInHand && isMyTurn && gameState.phase === 'attack'}
+            {@const isSelected = selectedTileId === tile.id}
+            {@const pulseTile = isTargetable && selectedTileId === null}
+            <div
+              in:fly={{ y: -80, duration: 500, delay: 60 + tileIdx * 80, easing: cubicOut }}
+              animate:flip={{ duration: 200, easing: cubicOut }}
+            >
+              <Popover.Root
+                open={isSelected}
+                onOpenChange={(open) => { if (!open) clearSelection(); }}
+              >
+                <Popover.Trigger>
+                  {#snippet child({ props })}
+                    <button
+                      {...props}
+                      onclick={() => isTargetable ? selectTile(tile) : undefined}
+                      class="focus:outline-none"
+                      class:cursor-pointer={isTargetable}
+                      class:cursor-default={!isTargetable}
+                      disabled={!isTargetable && !isSelected}
+                    >
+                      {@render TilePill({ tile, value: tileValue(tile), highlighted: isSelected, targetable: isTargetable, isOpponent: true, pulseTile })}
+                    </button>
+                  {/snippet}
+                </Popover.Trigger>
+                <Popover.Content side="bottom" align="center" class="w-auto p-3">
+                  <p class="mb-2 text-xs text-muted-foreground text-center">Pick a value:</p>
+                  <div class="grid grid-cols-7 gap-1">
+                    {#each Array.from({length: 13}, (_, i) => i) as v}
+                      <button
+                        onclick={() => guessedValue = v}
+                        class="h-9 w-9 rounded-lg text-sm font-bold transition-colors
+                          {guessedValue === v
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'}"
+                      >
+                        {v === 0 ? 'J' : v}
+                      </button>
+                    {/each}
+                  </div>
+                  {#if guessedValue != null}
+                    <div class="mt-2 flex gap-2 justify-center">
+                      <Button size="sm" onclick={guess}>
+                        Guess {guessedValue === 0 ? 'Joker' : guessedValue}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onclick={clearSelection}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  {/if}
+                </Popover.Content>
+              </Popover.Root>
+            </div>
+          {/each}
+          <!-- Opponent in-hand tile (face-down) -->
+          {#if opp.handTile}
+            <div
+              in:fly={{ y: -80, duration: 500, delay: 150, easing: cubicOut }}
+            >
+              <div class="flex flex-col items-center gap-4">
+                <span class="text-xs text-amber-600 font-semibold">In hand</span>
+                {@render TilePill({ tile: opp.handTile, value: null, inHand: true, isOpponent: true })}
+              </div>
+            </div>
+          {/if}
+          {#if opp.tiles.length === 0 && !opp.handTile}
+            <span class="text-sm italic text-muted-foreground">Eliminated</span>
+          {/if}
+        </div>
+      </section>
+    {/each}
+
+    <Separator />
+
+    <!-- My lineup (below opponent tiles) -->
     <section>
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-2">Your tiles</h2>
+      <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Your tiles</h2>
 
       {#if showJokerPicker}
-        <!-- Joker placement picker -->
-        <div class="bg-gray-800 rounded-xl p-4 border border-yellow-500/40">
-          <p class="text-sm text-yellow-300 font-semibold mb-3">
+        <div class="rounded-xl border bg-card p-4">
+          <p class="mb-3 text-sm font-semibold text-amber-600">
             Place your {myHandTile?.color} Joker — tap a gap to choose its position:
           </p>
-          <div class="flex items-center flex-wrap gap-1">
+          <div class="flex flex-wrap items-center justify-center gap-1">
             {#each Array.from({ length: myTiles.length + 1 }, (_, i) => i) as gapIdx}
               <button
                 onclick={() => selectedGap = gapIdx}
-                class="w-6 h-16 rounded flex items-center justify-center text-xs font-bold transition-colors
+                class="flex h-24 w-6 items-center justify-center rounded text-xs font-bold transition-colors
                   {selectedGap === gapIdx
-                    ? 'bg-yellow-400 text-black'
-                    : 'bg-gray-700 text-gray-400 hover:bg-yellow-500/30 hover:text-yellow-300'}"
+                    ? 'bg-amber-400 text-black'
+                    : 'bg-muted text-muted-foreground hover:bg-amber-100 hover:text-amber-700'}"
                 title="Place Joker here"
               >↓</button>
               {#if gapIdx < myTiles.length}
@@ -254,201 +389,138 @@ function leaveLobby() {
               {/if}
             {/each}
           </div>
-          <div class="flex gap-2 mt-3">
-            <button
+          <div class="mt-3 flex gap-2 justify-center">
+            <Button
               onclick={confirmJokerPlacement}
               disabled={selectedGap === null}
-              class="px-5 py-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed text-black rounded-xl font-semibold transition-colors"
+              class="bg-amber-500 hover:bg-amber-400 text-black"
             >
               Confirm Placement
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               onclick={() => { showJokerPicker = false; selectedGap = null; }}
-              class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-xl font-semibold transition-colors"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       {:else}
-        <div class="flex flex-wrap gap-2">
-          {#each myTiles as tile (tile.id)}
-            <div in:fly={{ y: 32, duration: 300, easing: cubicOut }} animate:flip={{ duration: 250 }}>
-              {@render TilePill({ tile, value: tileValue(tile) })}
+        <div class="flex flex-wrap justify-center gap-3">
+          {#each myTiles as tile, tileIdx (tile.id)}
+            {@const isTargeted = !isMyTurn && gameState.targetedTileId != null && gameState.targetedTileId === tile.id}
+            <div
+              in:fly={{ y: 80, duration: 500, delay: 60 + tileIdx * 80, easing: cubicOut }}
+              animate:flip={{ duration: 200, easing: cubicOut }}
+            >
+              {@render TilePill({ tile, value: tileValue(tile), isTargeted })}
             </div>
           {/each}
           {#if myHandTile}
-            <div class="flex flex-col items-center">
-              <span class="text-xs text-yellow-300 mb-1">In hand</span>
-              {@render TilePill({ tile: myHandTile, value: tileValue(myHandTile) })}
+            <div
+              class="flex flex-col items-center gap-4 {myTiles.length > 0 ? 'ml-5 pl-5 border-l border-border/40' : ''}"
+              in:fly={{ y: 80, duration: 500, delay: 60 + myTiles.length * 80, easing: cubicOut }}
+            >
+              <span class="text-xs text-amber-600 font-semibold">In hand</span>
+              {@render TilePill({ tile: myHandTile, value: tileValue(myHandTile), inHand: true })}
             </div>
           {/if}
           {#if myTiles.length === 0 && !myHandTile}
-            <span class="text-gray-500 text-sm italic">No tiles</span>
+            <span class="text-sm italic text-muted-foreground">No tiles</span>
           {/if}
         </div>
       {/if}
     </section>
 
-    <!-- Opponents -->
-    {#each opponents as opp (opp.member.id)}
-      <section>
-        <h2 class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-2">
-          {opp.player?.name ?? '?'}
-          {#if opp.member.playerIdentity.toHexString() === gameState.activePlayer.toHexString()}
-            <span class="text-green-400 ml-1">●</span>
+  </main>
+
+  <!-- Sticky bottom action bar -->
+  {#if !winnerName}
+    <div class="sticky bottom-0 border-t bg-background px-4 py-3">
+      {#if !isMyTurn}
+        <p class="text-center text-muted-foreground">Waiting for {activePlayerName}…</p>
+
+      {:else if gameState.phase === 'draw'}
+        <div class="flex justify-center gap-3">
+          <Button
+            onclick={() => drawTile('black')}
+            disabled={blackLeft === 0}
+            size="lg"
+            class={blackLeft > 0 ? 'ring-2 ring-white/50 ring-offset-2 animate-pulse' : ''}
+            style="background-color: #5e81ac; color: white; border: none;"
+          >
+            Draw ■ ({blackLeft})
+          </Button>
+          <Button
+            onclick={() => drawTile('white')}
+            disabled={whiteLeft === 0}
+            size="lg"
+            class={whiteLeft > 0 ? 'ring-2 ring-white/50 ring-offset-2 animate-pulse' : ''}
+            style="background-color: #bf616a; color: white; border: none;"
+          >
+            Draw ■ ({whiteLeft})
+          </Button>
+        </div>
+
+      {:else if gameState.phase === 'attack'}
+        <div class="flex flex-wrap items-center justify-center gap-3">
+          {#if !selectedTileId}
+            <p class="text-sm text-muted-foreground">
+              {gameState.canEndTurn
+                ? 'Correct! Select another tile to attack or end turn.'
+                : 'Select an opponent\'s hidden tile to attack.'}
+            </p>
           {/if}
-        </h2>
-        <div class="flex flex-wrap gap-2">
-          {#each opp.tiles as tile (tile.id)}
-            {@const isTargetable = !tile.isRevealed && !tile.isInHand && isMyTurn && gameState.phase === 'attack'}
-            {@const isSelected = selectedTileId === tile.id}
-            <div in:fly={{ y: 32, duration: 300, easing: cubicOut }} animate:flip={{ duration: 250 }}>
-              <button
-                onclick={() => isTargetable ? selectTile(tile) : null}
-                class="focus:outline-none"
-                class:cursor-pointer={isTargetable}
-                class:cursor-default={!isTargetable}
-                disabled={!isTargetable}
-              >
-                {@render TilePill({ tile, value: tileValue(tile), highlighted: isSelected, targetable: isTargetable })}
-              </button>
-            </div>
-          {/each}
-          {#if opp.tiles.length === 0}
-            <span class="text-gray-500 text-sm italic">Eliminated</span>
+          {#if gameState.canEndTurn}
+            <Button
+              variant="secondary"
+              class={!selectedTileId ? 'ring-2 ring-foreground/30 ring-offset-1 animate-pulse' : ''}
+              onclick={endTurn}
+            >
+              {handTileIsJoker ? 'Place Joker…' : 'End Turn'}
+            </Button>
           {/if}
         </div>
-      </section>
-    {/each}
+      {/if}
+    </div>
+  {:else}
+    <!-- Spacer so the dialog isn't obscured -->
+    <div class="h-16"></div>
+  {/if}
 
-    <!-- Action area -->
-    {#if !winnerName}
-      <section class="mt-auto border-t border-gray-700 pt-4">
-        {#if !isMyTurn}
-          <p class="text-gray-400 text-center">Waiting for {activePlayerName}…</p>
-
-        {:else if gameState.phase === 'draw'}
-          <div class="flex justify-center">
-            <button
-              onclick={drawTile}
-              class="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold text-lg transition-colors"
-            >
-              Draw Tile
-            </button>
-          </div>
-
-        {:else if gameState.phase === 'attack'}
-          <div class="flex flex-col gap-4">
-
-            {#if gameState.canEndTurn}
-              <!-- Correct guess: can guess again or end turn -->
-              <div class="flex justify-center gap-4">
-                {#if selectedTileId != null}
-                  <!-- Value picker for another attack -->
-                  <div class="flex flex-col gap-2">
-                    <p class="text-sm text-gray-300 text-center">Pick value to guess:</p>
-                    <div class="flex flex-wrap gap-1 justify-center">
-                      {#each Array.from({length: 13}, (_, i) => i) as v}
-                        <button
-                          onclick={() => guessedValue = v}
-                          class="w-9 h-9 rounded-lg text-sm font-bold transition-colors {guessedValue === v ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}"
-                        >
-                          {v === 0 ? 'J' : v}
-                        </button>
-                      {/each}
-                    </div>
-                    {#if guessedValue != null}
-                      <button
-                        onclick={guess}
-                        class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold transition-colors"
-                      >
-                        Guess {guessedValue === 0 ? 'Joker' : guessedValue}
-                      </button>
-                    {/if}
-                  </div>
-                {:else}
-                  <p class="text-sm text-green-400">Correct! Select another tile to attack or end turn.</p>
-                {/if}
-                <button
-                  onclick={endTurn}
-                  class="px-6 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-xl font-semibold transition-colors self-end"
-                >
-                  {handTileIsJoker ? 'Place Joker…' : 'End Turn'}
-                </button>
-              </div>
-
-            {:else}
-              <!-- First attack this turn -->
-              {#if selectedTileId == null}
-                <p class="text-sm text-gray-300 text-center">Select an opponent's hidden tile to attack.</p>
-              {:else}
-                <div class="flex flex-col gap-2">
-                  <p class="text-sm text-gray-300 text-center">
-                    Attacking <span class="font-semibold text-white">{selectedTile?.color}</span> tile at position {selectedTile?.position} — pick a value:
-                  </p>
-                  <div class="flex flex-wrap gap-1 justify-center">
-                    {#each Array.from({length: 13}, (_, i) => i) as v}
-                      <button
-                        onclick={() => guessedValue = v}
-                        class="w-9 h-9 rounded-lg text-sm font-bold transition-colors {guessedValue === v ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}"
-                      >
-                        {v === 0 ? 'J' : v}
-                      </button>
-                    {/each}
-                  </div>
-                  {#if guessedValue != null}
-                    <div class="flex gap-2 justify-center">
-                      <button
-                        onclick={guess}
-                        class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold transition-colors"
-                      >
-                        Guess {guessedValue === 0 ? 'Joker' : guessedValue}
-                      </button>
-                      <button
-                        onclick={() => { selectedTileId = null; guessedValue = null; }}
-                        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-xl font-semibold transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            {/if}
-
-          </div>
-        {/if}
-      </section>
-    {/if}
-
-  </main>
 </div>
 
 <!-- Tile pill sub-component -->
-{#snippet TilePill({ tile, value, highlighted = false, targetable = false }: {
+{#snippet TilePill({ tile, value, highlighted = false, targetable = false, isOpponent = false, inHand = false, isTargeted = false, pulseTile = false }: {
   tile: TilePublic;
   value: number | null;
   highlighted?: boolean;
   targetable?: boolean;
+  isOpponent?: boolean;
+  inHand?: boolean;
+  isTargeted?: boolean;
+  pulseTile?: boolean;
 })}
   <div
     class="
-      w-12 h-16 rounded-xl flex flex-col items-center justify-center text-sm font-bold select-none
-      border-2 transition-all
-      {tile.color === 'black'
-        ? 'bg-gray-900 text-white border-gray-600'
-        : 'bg-white text-gray-900 border-gray-300'}
-      {highlighted ? '!border-blue-400 shadow-[0_0_0_2px_#60a5fa]' : ''}
-      {targetable ? 'hover:border-yellow-400 hover:shadow-[0_0_0_2px_#facc15]' : ''}
-      {tile.isRevealed ? '-translate-y-3 shadow-lg' : ''}
+      flex h-24 w-16 select-none flex-col items-center justify-center rounded-xl border-2
+      font-bold transition-all duration-200 text-white border-white/20
+      {tile.isRevealed
+        ? isOpponent ? 'translate-y-0 shadow-none' : 'translate-y-2 shadow-none'
+        : '-translate-y-2 shadow-md'}
+      {targetable && !highlighted ? 'hover:-translate-y-3 hover:shadow-lg' : ''}
+      {highlighted ? 'ring-2 ring-primary ring-offset-2 shadow-lg' : ''}
+      {inHand ? 'ring-2 ring-amber-400 ring-offset-1' : ''}
+      {isTargeted ? 'ring-2 ring-yellow-400 ring-offset-2 animate-pulse' : ''}
+      {pulseTile ? 'ring-2 ring-white/50 animate-pulse' : ''}
     "
+    style="background-color: {tile.color === 'black' ? '#5e81ac' : '#bf616a'};"
   >
     {#if value != null}
-      <span class="text-lg leading-none">{value === 0 ? 'J' : value}</span>
+      <span class="text-2xl leading-none">{value === 0 ? 'J' : value}</span>
     {:else}
-      <span class="text-xl leading-none text-gray-400">?</span>
+      <span class="text-2xl leading-none text-white/50">?</span>
     {/if}
-    <span class="text-[9px] mt-1 opacity-50">{tile.color === 'black' ? '◼' : '◻'}</span>
+    <span class="mt-1 text-xs opacity-60">{tile.color === 'black' ? '■' : '□'}</span>
   </div>
 {/snippet}

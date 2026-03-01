@@ -92,7 +92,12 @@ function doLeave(ctx: any): void {
     const remaining = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(lobbyId)];
 
     if (lobby.status !== 'in_game') {
-      if (remaining.length === 0) ctx.db.lobby.id.delete(lobbyId);
+      if (remaining.length === 0) {
+        ctx.db.lobby.id.delete(lobbyId);
+      } else if (lobby.status === 'starting') {
+        // Countdown cancelled — reset to waiting so others can look for a new partner
+        ctx.db.lobby.id.update({ ...lobby, status: 'waiting', gameStartsAt: undefined });
+      }
       continue;
     }
 
@@ -118,7 +123,7 @@ function doLeave(ctx: any): void {
 
     if (playersWithHiddenTiles.length === 1) {
       // Award forfeit win — remaining player sees win banner, cleans up when they leave
-      ctx.db.game_state.id.update({ ...gs, winner: playersWithHiddenTiles[0].playerIdentity, inHandTileId: undefined });
+      ctx.db.game_state.id.update({ ...gs, winner: playersWithHiddenTiles[0].playerIdentity, inHandTileId: undefined, targetedTileId: undefined });
     } else if (playersWithHiddenTiles.length === 0) {
       cleanupGame(ctx, lobbyId);
     } else {
@@ -135,7 +140,7 @@ function doLeave(ctx: any): void {
           }
         }
         const nextPlayer = getNextActivePlayer(ctx, remaining, ctx.sender, lobbyId);
-        ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer });
+        ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer, targetedTileId: undefined });
       }
     }
   }
@@ -197,88 +202,27 @@ export const join_lobby = spacetimedb.reducer({ maxPlayers: t.u32() }, (ctx, { m
       maxPlayers,
       status: 'waiting',
       createdAt: ctx.timestamp,
+      gameStartsAt: undefined,
     });
     targetLobbyId = newLobby.id;
   }
 
+  const defaultPref = maxPlayers === 4 ? '2b1w' : '2b2w';
   ctx.db.lobby_member.insert({
     id: 0n,
     lobbyId: targetLobbyId,
     playerIdentity: ctx.sender,
     joinedAt: ctx.timestamp,
+    colorPreference: defaultPref,
   });
 
   const allMembers = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(targetLobbyId)];
   if (allMembers.length >= maxPlayers) {
     const lb = ctx.db.lobby.id.find(targetLobbyId);
     if (lb) {
-      ctx.db.lobby.id.update({ ...lb, status: 'in_game' });
-
-      // ── Game initialization ──────────────────────────────────────────────
-      const members = allMembers.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-      const tilesPerPlayer = members.length === 4 ? 3 : 4;
-
-      // Build deck: 2 colors × 13 values (0–12)
-      const deck: Array<{ color: string; value: number }> = [];
-      for (let v = 0; v <= 12; v++) {
-        deck.push({ color: 'black', value: v });
-        deck.push({ color: 'white', value: v });
-      }
-
-      // LCG Fisher-Yates shuffle
-      let s = ctx.timestamp.microsSinceUnixEpoch;
-      for (let i = 25; i >= 1; i--) {
-        s = BigInt.asUintN(64, s * 6364136223846793005n + 1442695040888963407n);
-        const j = Number(s % BigInt(i + 1));
-        const tmp = deck[i];
-        deck[i] = deck[j];
-        deck[j] = tmp;
-      }
-
-      // Insert all 26 tiles into tile_pool
-      const poolRows: Array<{ id: bigint; color: string; value: number }> = [];
-      for (let i = 0; i < deck.length; i++) {
-        const row = ctx.db.tile_pool.insert({
-          id: 0n, lobbyId: targetLobbyId,
-          orderIndex: i, color: deck[i].color, value: deck[i].value, isDrawn: false,
-        });
-        poolRows.push({ id: row.id, color: deck[i].color, value: deck[i].value });
-      }
-
-      // Deal tiles to each player
-      let deckIdx = 0;
-      for (const member of members) {
-        const hand = poolRows.slice(deckIdx, deckIdx + tilesPerPlayer);
-        deckIdx += tilesPerPlayer;
-
-        // Sort hand: value ASC, black before white
-        const sorted = [...hand].sort((a, b) => {
-          if (a.value !== b.value) return a.value - b.value;
-          return a.color === 'black' ? -1 : 1;
-        });
-
-        for (let pos = 0; pos < sorted.length; pos++) {
-          const poolRow = ctx.db.tile_pool.id.find(sorted[pos].id)!;
-          ctx.db.tile_pool.id.update({ ...poolRow, isDrawn: true });
-          const pub = ctx.db.tile_public.insert({
-            id: 0n, lobbyId: targetLobbyId, ownerId: member.playerIdentity,
-            color: sorted[pos].color, position: pos,
-            isRevealed: false, isInHand: false, revealedValue: undefined,
-            jokerSlot: sorted[pos].value === 0 ? 0 : undefined,
-          });
-          ctx.db.tile_secret.insert({
-            id: 0n, tilePublicId: pub.id, ownerId: member.playerIdentity, value: sorted[pos].value,
-          });
-        }
-      }
-
-      // Insert initial game state
-      ctx.db.game_state.insert({
-        id: 0n, lobbyId: targetLobbyId,
-        activePlayer: members[0].playerIdentity,
-        phase: 'draw', canEndTurn: false,
-        inHandTileId: undefined, winner: undefined, lastAction: undefined,
-      });
+      // Start a 5-second countdown so players can finalise color preferences
+      const gameStartsAt = ctx.timestamp.microsSinceUnixEpoch + 5_000_000n;
+      ctx.db.lobby.id.update({ ...lb, status: 'starting', gameStartsAt });
     }
   }
 });
@@ -287,18 +231,106 @@ export const leave_lobby = spacetimedb.reducer({}, (ctx, _params) => {
   doLeave(ctx);
 });
 
-export const draw_tile = spacetimedb.reducer({ lobbyId: t.u64() }, (ctx, { lobbyId }) => {
+export const confirm_start = spacetimedb.reducer({ lobbyId: t.u64() }, (ctx, { lobbyId }) => {
+  const lb = ctx.db.lobby.id.find(lobbyId);
+  if (!lb) return;
+  if (lb.status !== 'starting') return; // Already started or wrong state — idempotent no-op
+  if (lb.gameStartsAt !== undefined && ctx.timestamp.microsSinceUnixEpoch < lb.gameStartsAt) return; // Too early
+
+  // Mark as in_game first to prevent duplicate starts (transactions are serialised)
+  ctx.db.lobby.id.update({ ...lb, status: 'in_game' });
+
+  const allMembers = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(lobbyId)];
+  const members = allMembers.sort((a: any, b: any) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const tilesPerPlayer = members.length === 4 ? 3 : 4;
+
+  // Build deck: 2 colors × 13 values (0–12)
+  const deck: Array<{ color: string; value: number }> = [];
+  for (let v = 0; v <= 12; v++) {
+    deck.push({ color: 'black', value: v });
+    deck.push({ color: 'white', value: v });
+  }
+
+  // LCG Fisher-Yates shuffle
+  let s = ctx.timestamp.microsSinceUnixEpoch;
+  for (let i = 25; i >= 1; i--) {
+    s = BigInt.asUintN(64, s * 6364136223846793005n + 1442695040888963407n);
+    const j = Number(s % BigInt(i + 1));
+    const tmp = deck[i];
+    deck[i] = deck[j];
+    deck[j] = tmp;
+  }
+
+  // Insert all 26 tiles into tile_pool (shuffled)
+  const poolRows: Array<{ id: bigint; color: string; value: number }> = [];
+  for (let i = 0; i < deck.length; i++) {
+    const row = ctx.db.tile_pool.insert({
+      id: 0n, lobbyId, orderIndex: i, color: deck[i].color, value: deck[i].value, isDrawn: false,
+    });
+    poolRows.push({ id: row.id, color: deck[i].color, value: deck[i].value });
+  }
+
+  // Split pool into color groups (maintaining shuffled order)
+  const blackPool = poolRows.filter(r => r.color === 'black');
+  const whitePool = poolRows.filter(r => r.color === 'white');
+  let blackIdx = 0;
+  let whiteIdx = 0;
+
+  // Deal tiles to each player based on their colorPreference
+  for (const member of members) {
+    const pref = member.colorPreference;
+    const bMatch = pref.match(/(\d+)b/);
+    const wMatch = pref.match(/(\d+)w/);
+    const nBlack = bMatch ? parseInt(bMatch[1]) : (tilesPerPlayer === 3 ? 2 : 2);
+    const nWhite = wMatch ? parseInt(wMatch[1]) : (tilesPerPlayer === 3 ? 1 : 2);
+
+    const hand: Array<{ id: bigint; color: string; value: number }> = [];
+    for (let i = 0; i < nBlack && blackIdx < blackPool.length; i++) hand.push(blackPool[blackIdx++]);
+    for (let i = 0; i < nWhite && whiteIdx < whitePool.length; i++) hand.push(whitePool[whiteIdx++]);
+
+    const sorted = [...hand].sort((a, b) => {
+      if (a.value !== b.value) return a.value - b.value;
+      return a.color === 'black' ? -1 : 1;
+    });
+
+    for (let pos = 0; pos < sorted.length; pos++) {
+      const poolRow = ctx.db.tile_pool.id.find(sorted[pos].id)!;
+      ctx.db.tile_pool.id.update({ ...poolRow, isDrawn: true });
+      const pub = ctx.db.tile_public.insert({
+        id: 0n, lobbyId, ownerId: member.playerIdentity,
+        color: sorted[pos].color, position: pos,
+        isRevealed: false, isInHand: false, revealedValue: undefined,
+        jokerSlot: sorted[pos].value === 0 ? 0 : undefined,
+      });
+      ctx.db.tile_secret.insert({
+        id: 0n, tilePublicId: pub.id, ownerId: member.playerIdentity, value: sorted[pos].value,
+      });
+    }
+  }
+
+  ctx.db.game_state.insert({
+    id: 0n, lobbyId,
+    activePlayer: members[0].playerIdentity,
+    phase: 'draw', canEndTurn: false,
+    inHandTileId: undefined, winner: undefined, lastAction: undefined,
+    targetedTileId: undefined,
+  });
+});
+
+export const draw_tile = spacetimedb.reducer({ lobbyId: t.u64(), color: t.string() }, (ctx, { lobbyId, color }) => {
   const gs = [...ctx.db.game_state.game_state_lobby_id.filter(lobbyId)][0];
   if (!gs) throw new SenderError('Game not found');
   if (gs.winner !== undefined) throw new SenderError('Game is over');
   if (gs.activePlayer.toHexString() !== ctx.sender.toHexString()) throw new SenderError('Not your turn');
   if (gs.phase !== 'draw') throw new SenderError('Not in draw phase');
+  if (color !== 'black' && color !== 'white') throw new SenderError('Invalid color');
 
-  // Find first undrawn tile in pool
+  // Find first undrawn tile of specified color in pool
   const poolTiles = [...ctx.db.tile_pool.tile_pool_lobby_id.filter(lobbyId)]
+    .filter(tp => tp.color === color)
     .sort((a, b) => a.orderIndex - b.orderIndex);
   const nextTile = poolTiles.find(tp => !tp.isDrawn);
-  if (!nextTile) throw new SenderError('No tiles remaining');
+  if (!nextTile) throw new SenderError(`No ${color} tiles remaining`);
 
   ctx.db.tile_pool.id.update({ ...nextTile, isDrawn: true });
 
@@ -311,7 +343,7 @@ export const draw_tile = spacetimedb.reducer({ lobbyId: t.u64() }, (ctx, { lobby
     id: 0n, tilePublicId: pub.id, ownerId: ctx.sender, value: nextTile.value,
   });
 
-  ctx.db.game_state.id.update({ ...gs, inHandTileId: pub.id, phase: 'attack', lastAction: undefined });
+  ctx.db.game_state.id.update({ ...gs, inHandTileId: pub.id, phase: 'attack', lastAction: undefined, targetedTileId: undefined });
 });
 
 export const attack = spacetimedb.reducer(
@@ -362,7 +394,7 @@ export const attack = spacetimedb.reducer(
       }
 
       const lastAction = `✓ ${attackerName} correctly guessed ${targetOwnerName}'s ${colorLabel} tile as ${guessLabel}!`;
-      ctx.db.game_state.id.update({ ...gs, canEndTurn: true, winner, lastAction });
+      ctx.db.game_state.id.update({ ...gs, canEndTurn: true, winner, lastAction, targetedTileId: undefined });
     } else {
       // ── Wrong guess ──────────────────────────────────────────────────────
       const inHandTile = ctx.db.tile_public.id.find(gs.inHandTileId);
@@ -382,7 +414,7 @@ export const attack = spacetimedb.reducer(
       const members = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(lobbyId)];
       const nextPlayer = getNextActivePlayer(ctx, members, ctx.sender, lobbyId);
       const lastAction = `✗ ${attackerName} guessed ${guessLabel} on ${targetOwnerName}'s ${colorLabel} tile — wrong!`;
-      ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer, lastAction });
+      ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer, lastAction, targetedTileId: undefined });
     }
   }
 );
@@ -416,5 +448,46 @@ export const end_turn = spacetimedb.reducer({ lobbyId: t.u64(), jokerSlot: t.u8(
 
   const members = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(lobbyId)];
   const nextPlayer = getNextActivePlayer(ctx, members, ctx.sender, lobbyId);
-  ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer });
+  ctx.db.game_state.id.update({ ...gs, phase: 'draw', canEndTurn: false, inHandTileId: undefined, activePlayer: nextPlayer, targetedTileId: undefined });
 });
+
+export const set_color_preference = spacetimedb.reducer(
+  { lobbyId: t.u64(), preference: t.string() },
+  (ctx, { lobbyId, preference }) => {
+    const lb = ctx.db.lobby.id.find(lobbyId);
+    if (!lb) throw new SenderError('Lobby not found');
+    if (lb.status !== 'waiting' && lb.status !== 'starting') throw new SenderError('Game already started');
+
+    const tilesPerPlayer = lb.maxPlayers === 4 ? 3 : 4;
+    const validPrefs = tilesPerPlayer === 3
+      ? ['3b', '2b1w', '1b2w', '3w']
+      : ['4b', '3b1w', '2b2w', '1b3w', '4w'];
+    if (!validPrefs.includes(preference)) throw new SenderError('Invalid color preference');
+
+    const member = [...ctx.db.lobby_member.lobby_member_lobby_id.filter(lobbyId)]
+      .find((m: any) => m.playerIdentity.toHexString() === ctx.sender.toHexString());
+    if (!member) throw new SenderError('You are not in this lobby');
+
+    ctx.db.lobby_member.id.update({ ...member, colorPreference: preference });
+  }
+);
+
+export const select_target = spacetimedb.reducer(
+  { lobbyId: t.u64(), tileId: t.u64().optional() },
+  (ctx, { lobbyId, tileId }) => {
+    const gs = [...ctx.db.game_state.game_state_lobby_id.filter(lobbyId)][0];
+    if (!gs) throw new SenderError('Game not found');
+    if (gs.activePlayer.toHexString() !== ctx.sender.toHexString()) throw new SenderError('Not your turn');
+    if (gs.phase !== 'attack') throw new SenderError('Not in attack phase');
+
+    if (tileId !== undefined) {
+      const tile = ctx.db.tile_public.id.find(tileId);
+      if (!tile) throw new SenderError('Tile not found');
+      if (tile.lobbyId !== lobbyId) throw new SenderError('Tile not in this lobby');
+      if (tile.ownerId.toHexString() === ctx.sender.toHexString()) throw new SenderError('Cannot target your own tile');
+      if (tile.isRevealed) throw new SenderError('Tile is already revealed');
+    }
+
+    ctx.db.game_state.id.update({ ...gs, targetedTileId: tileId });
+  }
+);

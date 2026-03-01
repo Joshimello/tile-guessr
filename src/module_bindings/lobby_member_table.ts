@@ -15,4 +15,5 @@ export default __t.row({
   lobbyId: __t.u64().name("lobby_id"),
   playerIdentity: __t.identity().name("player_identity"),
   joinedAt: __t.timestamp().name("joined_at"),
+  colorPreference: __t.string().name("color_preference"),
 });

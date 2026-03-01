@@ -7,16 +7,22 @@ import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
 import AttackReducer from "../attack_reducer";
+import ConfirmStartReducer from "../confirm_start_reducer";
 import DrawTileReducer from "../draw_tile_reducer";
 import EndTurnReducer from "../end_turn_reducer";
 import JoinLobbyReducer from "../join_lobby_reducer";
 import LeaveLobbyReducer from "../leave_lobby_reducer";
+import SelectTargetReducer from "../select_target_reducer";
+import SetColorPreferenceReducer from "../set_color_preference_reducer";
 import SetNameReducer from "../set_name_reducer";
 
 export type AttackParams = __Infer<typeof AttackReducer>;
+export type ConfirmStartParams = __Infer<typeof ConfirmStartReducer>;
 export type DrawTileParams = __Infer<typeof DrawTileReducer>;
 export type EndTurnParams = __Infer<typeof EndTurnReducer>;
 export type JoinLobbyParams = __Infer<typeof JoinLobbyReducer>;
 export type LeaveLobbyParams = __Infer<typeof LeaveLobbyReducer>;
+export type SelectTargetParams = __Infer<typeof SelectTargetReducer>;
+export type SetColorPreferenceParams = __Infer<typeof SetColorPreferenceReducer>;
 export type SetNameParams = __Infer<typeof SetNameReducer>;
 

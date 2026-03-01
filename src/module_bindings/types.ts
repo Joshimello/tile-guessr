@@ -19,6 +19,7 @@ export const GameState = __t.object("GameState", {
   inHandTileId: __t.option(__t.u64()),
   winner: __t.option(__t.identity()),
   lastAction: __t.option(__t.string()),
+  targetedTileId: __t.option(__t.u64()),
 });
 export type GameState = __Infer<typeof GameState>;
 
@@ -27,6 +28,7 @@ export const Lobby = __t.object("Lobby", {
   maxPlayers: __t.u32(),
   status: __t.string(),
   createdAt: __t.timestamp(),
+  gameStartsAt: __t.option(__t.u64()),
 });
 export type Lobby = __Infer<typeof Lobby>;
 
@@ -35,6 +37,7 @@ export const LobbyMember = __t.object("LobbyMember", {
   lobbyId: __t.u64(),
   playerIdentity: __t.identity(),
   joinedAt: __t.timestamp(),
+  colorPreference: __t.string(),
 });
 export type LobbyMember = __Infer<typeof LobbyMember>;
 

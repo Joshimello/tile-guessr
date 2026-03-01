@@ -19,4 +19,5 @@ export default __t.row({
   inHandTileId: __t.option(__t.u64()).name("in_hand_tile_id"),
   winner: __t.option(__t.identity()),
   lastAction: __t.option(__t.string()).name("last_action"),
+  targetedTileId: __t.option(__t.u64()).name("targeted_tile_id"),
 });

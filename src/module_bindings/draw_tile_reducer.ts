@@ -12,4 +12,5 @@ import {
 
 export default {
   lobbyId: __t.u64(),
+  color: __t.string(),
 };

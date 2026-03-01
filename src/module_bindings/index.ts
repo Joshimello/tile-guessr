@@ -35,10 +35,13 @@ import {
 
 // Import all reducer arg schemas
 import AttackReducer from "./attack_reducer";
+import ConfirmStartReducer from "./confirm_start_reducer";
 import DrawTileReducer from "./draw_tile_reducer";
 import EndTurnReducer from "./end_turn_reducer";
 import JoinLobbyReducer from "./join_lobby_reducer";
 import LeaveLobbyReducer from "./leave_lobby_reducer";
+import SelectTargetReducer from "./select_target_reducer";
+import SetColorPreferenceReducer from "./set_color_preference_reducer";
 import SetNameReducer from "./set_name_reducer";
 
 // Import all procedure arg schemas
@@ -151,10 +154,13 @@ const tablesSchema = __schema({
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
   __reducerSchema("attack", AttackReducer),
+  __reducerSchema("confirm_start", ConfirmStartReducer),
   __reducerSchema("draw_tile", DrawTileReducer),
   __reducerSchema("end_turn", EndTurnReducer),
   __reducerSchema("join_lobby", JoinLobbyReducer),
   __reducerSchema("leave_lobby", LeaveLobbyReducer),
+  __reducerSchema("select_target", SelectTargetReducer),
+  __reducerSchema("set_color_preference", SetColorPreferenceReducer),
   __reducerSchema("set_name", SetNameReducer),
 );
 
