@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bun add:*)",
+      "Bash(bunx shadcn-svelte@latest:*)",
+      "Bash(pkill:*)",
+      "Bash(spacetime publish:*)",
+      "Bash(spacetime generate:*)",
+      "Bash(bun run:*)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_run_code",
+      "Bash(spacetime logs:*)",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_tabs",
+      "Bash(grep:*)"
+    ]
+  }
+}
