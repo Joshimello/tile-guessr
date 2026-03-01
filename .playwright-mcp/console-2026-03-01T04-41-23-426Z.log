@@ -1,0 +1,11 @@
+[     570ms] [WARNING] Origin trial controlled feature not enabled: 'language-model'. @ https://cpwebassets.codepen.io/assets/embed/ei.js:0
+[     570ms] [WARNING] Origin trial controlled feature not enabled: 'rewriter'. @ https://cpwebassets.codepen.io/assets/embed/ei.js:0
+[     570ms] [WARNING] Origin trial controlled feature not enabled: 'writer'. @ https://cpwebassets.codepen.io/assets/embed/ei.js:0
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'language-model'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'rewriter'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'writer'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
+[   17489ms] Uncaught ReferenceError: THREE is not defined
+    at <anonymous> (https://s3-us-west-2.amazonaws.com/s.cdpn.io/264161/OrbitControls.js:17:0)
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'language-model'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'rewriter'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
+[     854ms] [WARNING] Origin trial controlled feature not enabled: 'writer'. @ https://codepen.io/mayacoda/embed/LYdKpXg?height=300&default-tab=result&slug-hash=LYdKpXg&user=mayacoda&name=cp_embed_1:318
